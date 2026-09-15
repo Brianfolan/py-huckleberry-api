@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- towncrier release notes start -->
 
+## [0.4.4] - 2026-09-15
+
+### Features
+
+- Add `get_sleep()` and `get_nursing()` for typed access to current sleep and nursing timer state.
+- Add `log_temperature()` with Celsius, Fahrenheit, optional notes, and safe historical backfills.
+
+### Bugfixes
+
+- Allow `feed/{child_uid}/intervals` bottle rows to omit `amount`, so feeds saved without a volume validate instead of failing the whole `list_feed_intervals` query.
+- Surface failed temperature, growth, and nursing history writes instead of continuing with inconsistent latest-entry summaries.
+- Reject unsupported growth units and align growth and temperature history/summary payloads with live Firebase data.
+
+
 ## [0.4.3] - 2026-05-18
 
 ### Bugfixes
