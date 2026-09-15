@@ -686,23 +686,33 @@ class FirebaseDiaperMultiContainer(StrictModel):
 class FirebaseGrowthData(StrictModel):
     """health/{child_uid}/data growth entry payload.
 
-    Health history uses `data` subcollection (not `intervals`).
+    Live app history rows omit the `_id`, `type`, `isNight`, and
+    `multientry_key` fields found in prefs.lastGrowthEntry.
     """
 
-    id_: str | None = Field(default=None, alias="_id")
-    type: Literal["health"] | None = None
     mode: Literal["growth"]
     start: Number
     lastUpdated: Number | None = None
     offset: Number
-    isNight: bool | None = None
-    multientry_key: str | None = None
     weight: Number | None = None
     weightUnits: WeightUnits | None = None
     height: Number | None = None
     heightUnits: HeightUnits | None = None
     head: Number | None = None
     headUnits: HeadUnits | None = None
+
+
+class FirebaseLastGrowthData(FirebaseGrowthData):
+    """health/{child_uid}.prefs.lastGrowthEntry payload.
+
+    Live data includes the corresponding history document ID and summary
+    metadata that are absent from app-created health history rows.
+    """
+
+    id_: str = Field(alias="_id")
+    type: Literal["health"]
+    isNight: bool | None = None
+    multientry_key: None = None
 
 
 class FirebaseMedicationData(StrictModel):
@@ -727,17 +737,36 @@ class FirebaseMedicationData(StrictModel):
 class FirebaseTemperatureData(StrictModel):
     """health/{child_uid}/data temperature entry payload.
 
-    Health tracker writes temperature rows to `health/{child_uid}/data`.
+    Live app write observed with amount, timestamps, units, and optional notes.
+    Unlike prefs.lastTemperature, history rows omit `_id`, `type`, and
+    `multientry_key`.
     """
 
-    type: Literal["health"] | None = None
     mode: Literal["temperature"]
     start: Number
-    lastUpdated: Number | None = None
+    lastUpdated: Number
     offset: Number
-    amount: Number | None = None
-    units: TemperatureUnits | None = None
-    multientry_key: str | None = None
+    amount: Number
+    units: TemperatureUnits
+    notes: str | None = None
+
+
+class FirebaseLastTemperatureData(StrictModel):
+    """health/{child_uid}.prefs.lastTemperature payload.
+
+    Live data includes the history document ID and health metadata that are
+    absent from the corresponding health/{child_uid}/data row.
+    """
+
+    id_: str = Field(alias="_id")
+    type: Literal["health"]
+    mode: Literal["temperature"]
+    start: Number
+    lastUpdated: Number
+    offset: Number
+    amount: Number
+    units: TemperatureUnits
+    multientry_key: None = None
 
 
 HealthDataEntry: TypeAlias = FirebaseGrowthData | FirebaseMedicationData | FirebaseTemperatureData
@@ -746,9 +775,9 @@ HealthDataEntry: TypeAlias = FirebaseGrowthData | FirebaseMedicationData | Fireb
 class FirebaseHealthPrefs(StrictModel):
     """health/{child_uid}.prefs structure."""
 
-    lastGrowthEntry: FirebaseGrowthData | None = None
+    lastGrowthEntry: FirebaseLastGrowthData | None = None
     lastMedication: FirebaseMedicationData | None = None
-    lastTemperature: FirebaseTemperatureData | None = None
+    lastTemperature: FirebaseLastTemperatureData | None = None
     reminderV2: ReminderV2 | None = None
     timestamp: FirebaseTimestamp | None = None
     local_timestamp: Number | None = None

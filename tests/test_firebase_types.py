@@ -15,7 +15,9 @@ from huckleberry_api.firebase_types import (
     FirebaseFeedDocumentData,
     FirebaseFeedIntervalData,
     FirebaseGrowthData,
+    FirebaseHealthDocumentData,
     FirebaseLastActivityData,
+    FirebaseLastGrowthData,
     FirebaseLastPumpData,
     FirebaseMedicationData,
     FirebasePumpDocumentData,
@@ -23,6 +25,7 @@ from huckleberry_api.firebase_types import (
     FirebasePumpMultiContainer,
     FirebasePumpPrefs,
     FirebaseSleepDocumentData,
+    FirebaseTemperatureData,
 )
 
 
@@ -74,9 +77,9 @@ def test_sleep_and_diaper_documents_accept_empty_last_summary_maps() -> None:
     assert diaper_model.prefs.lastPotty.mode is None
 
 
-def test_growth_model_accepts_live_app_imperial_summary_units() -> None:
+def test_last_growth_model_accepts_live_app_imperial_summary_units() -> None:
     """Growth schema should accept the composite imperial units emitted by the live app."""
-    model = FirebaseGrowthData.model_validate(
+    model = FirebaseLastGrowthData.model_validate(
         {
             "_id": "1773175568582-ef0c64260d2686001e96",
             "head": 10.2,
@@ -116,9 +119,6 @@ def test_growth_model_accepts_sparse_live_app_data_rows() -> None:
         }
     )
 
-    assert model.id_ is None
-    assert model.type is None
-    assert model.isNight is None
     assert model.weightUnits == "kg"
     assert model.heightUnits == "cm"
 
@@ -140,6 +140,43 @@ def test_medication_model_accepts_live_app_ounce_units() -> None:
     )
 
     assert model.units == "oz"
+
+
+def test_temperature_models_accept_distinct_live_history_and_latest_payloads() -> None:
+    """Temperature history and latest-pref rows have different live shapes."""
+    history = FirebaseTemperatureData.model_validate(
+        {
+            "amount": 37.2,
+            "lastUpdated": 1789476705.854,
+            "mode": "temperature",
+            "notes": "With a note!",
+            "offset": -180.0,
+            "start": 1789476679.311,
+            "units": "C",
+        }
+    )
+    health = FirebaseHealthDocumentData.model_validate(
+        {
+            "prefs": {
+                "lastTemperature": {
+                    "_id": "1773640786119-a762313500b521fee51f",
+                    "type": "health",
+                    "mode": "temperature",
+                    "amount": 96.7,
+                    "units": "F",
+                    "offset": -120.0,
+                    "start": 1773640784.705,
+                    "lastUpdated": 1773640786.119,
+                    "multientry_key": None,
+                }
+            }
+        }
+    )
+
+    assert history.notes == "With a note!"
+    assert health.prefs is not None
+    assert health.prefs.lastTemperature is not None
+    assert health.prefs.lastTemperature.id_ == "1773640786119-a762313500b521fee51f"
 
 
 def test_bottle_feed_interval_accepts_missing_amount() -> None:

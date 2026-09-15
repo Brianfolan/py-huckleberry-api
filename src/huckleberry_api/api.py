@@ -49,12 +49,14 @@ from .firebase_types import (
     FirebaseLastActivityData,
     FirebaseLastBottleData,
     FirebaseLastDiaperData,
+    FirebaseLastGrowthData,
     FirebaseLastNursingData,
     FirebaseLastPottyData,
     FirebaseLastPumpData,
     FirebaseLastSideData,
     FirebaseLastSleepData,
     FirebaseLastSolidData,
+    FirebaseLastTemperatureData,
     FirebasePumpDocumentData,
     FirebasePumpIntervalData,
     FirebasePumpMultiContainer,
@@ -66,6 +68,7 @@ from .firebase_types import (
     FirebaseSleepMultiContainer,
     FirebaseSleepTimerData,
     FirebaseSolidsFeedIntervalData,
+    FirebaseTemperatureData,
     FirebaseTimestamp,
     FirebaseTypesAvailableTypes,
     FirebaseTypesDocument,
@@ -77,6 +80,7 @@ from .firebase_types import (
     PumpEntryMode,
     SolidsFoodEntry,
     SolidsReaction,
+    TemperatureUnits,
     VolumeUnits,
     to_firebase_dict,
 )
@@ -387,6 +391,34 @@ class HuckleberryAPI:
             return None
 
         return FirebaseUserDocument.model_validate(user_data)
+
+    async def get_sleep(self, child_uid: str) -> FirebaseSleepDocumentData | None:
+        """Get the typed sleep/{child_uid} document, including live timer state."""
+        _LOGGER.debug("Fetching sleep document for %s", child_uid)
+
+        db = await self._get_firestore_client()
+        sleep_doc = await db.collection("sleep").document(child_uid).get(timeout=10.0)
+        if not sleep_doc.exists:
+            return None
+
+        sleep_data = sleep_doc.to_dict()
+        if not sleep_data:
+            return None
+        return FirebaseSleepDocumentData.model_validate(sleep_data)
+
+    async def get_nursing(self, child_uid: str) -> FirebaseFeedDocumentData | None:
+        """Get the typed feed/{child_uid} document, including live nursing timer state."""
+        _LOGGER.debug("Fetching feed document for %s", child_uid)
+
+        db = await self._get_firestore_client()
+        feed_doc = await db.collection("feed").document(child_uid).get(timeout=10.0)
+        if not feed_doc.exists:
+            return None
+
+        feed_data = feed_doc.to_dict()
+        if not feed_data:
+            return None
+        return FirebaseFeedDocumentData.model_validate(feed_data)
 
     async def start_sleep(self, child_uid: str) -> None:
         """Start sleep tracking for a child."""
@@ -989,11 +1021,8 @@ class HuckleberryAPI:
             end_offset=await self._get_timezone_offset_minutes(),
         )
 
-        try:
-            await feed_intervals_ref.set(to_firebase_dict(breast_interval))
-            _LOGGER.info("Created nursing interval entry: %s", interval_id)
-        except GoogleAPICallError as err:
-            _LOGGER.error("Failed to create nursing interval entry: %s", err)
+        await feed_intervals_ref.set(to_firebase_dict(breast_interval))
+        _LOGGER.info("Created nursing interval entry: %s", interval_id)
 
         last_nursing_data = FirebaseLastNursingData(
             mode="breast",
@@ -1716,6 +1745,8 @@ class HuckleberryAPI:
 
         if not any([weight, height, head]):
             raise ValueError("At least one measurement (weight, height, or head) is required")
+        if units not in ("metric", "imperial"):
+            raise ValueError("units must be 'metric' or 'imperial'")
 
         client = await self._get_firestore_client()
         health_ref = client.collection("health").document(child_uid)
@@ -1737,14 +1768,10 @@ class HuckleberryAPI:
 
         # Build growth entry matching Huckleberry app structure
         growth_entry = FirebaseGrowthData(
-            id_=interval_id,
-            type="health",
             mode="growth",
             start=start_timestamp,
             lastUpdated=current_time,
             offset=current_offset,
-            isNight=False,
-            multientry_key=None,
         )
 
         # Add measurements with proper unit fields (matches app structure)
@@ -1769,23 +1796,29 @@ class HuckleberryAPI:
                 growth_entry.head = float(head)
                 growth_entry.headUnits = "hin"
 
+        last_growth_entry = FirebaseLastGrowthData(
+            **growth_entry.model_dump(),
+            _id=interval_id,
+            type="health",
+            isNight=False,
+            multientry_key=None,
+        )
+
         # Create interval document in health/{child_uid}/data subcollection
         # (Health uses "data" subcollection, not "intervals" like other trackers)
         health_data_ref = health_ref.collection("data").document(interval_id)
 
-        try:
-            await health_data_ref.set(to_firebase_dict(growth_entry))
-            _LOGGER.info("Created growth data entry in subcollection: %s", interval_id)
-        except GoogleAPICallError as err:
-            _LOGGER.error("Failed to create growth data entry: %s", err)
-            # Continue to update prefs even if subcollection write fails
+        await health_data_ref.set(to_firebase_dict(growth_entry))
+        _LOGGER.info("Created growth data entry in subcollection: %s", interval_id)
 
         # Update prefs.lastGrowthEntry and timestamps (matches Huckleberry app structure)
         if should_update_last_growth:
+            last_growth_payload = to_firebase_dict(last_growth_entry)
+            last_growth_payload["multientry_key"] = None
             try:
                 await health_ref.update(
                     {
-                        "prefs.lastGrowthEntry": to_firebase_dict(growth_entry),
+                        "prefs.lastGrowthEntry": last_growth_payload,
                         "prefs.timestamp": {"seconds": current_time},
                         "prefs.local_timestamp": current_time,
                     }
@@ -1795,6 +1828,82 @@ class HuckleberryAPI:
                 raise
 
         _LOGGER.info("Growth data logged successfully (updated_last=%s)", should_update_last_growth)
+
+    async def log_temperature(
+        self,
+        child_uid: str,
+        *,
+        start_time: datetime,
+        amount: float,
+        units: TemperatureUnits,
+        notes: str | None = None,
+    ) -> None:
+        """Log a body-temperature measurement.
+
+        Args:
+            child_uid: Child unique identifier
+            start_time: Measurement time
+            amount: Temperature value
+            units: ``C`` for Celsius or ``F`` for Fahrenheit
+            notes: Optional notes attached to the measurement
+        """
+        _LOGGER.info("Logging temperature data for child %s", child_uid)
+
+        client = await self._get_firestore_client()
+        health_ref = client.collection("health").document(child_uid)
+
+        start_timestamp = start_time.timestamp()
+        current_time = time.time()
+        current_offset = await self._get_timezone_offset_minutes()
+        health_doc = await health_ref.get()
+        health_model = FirebaseHealthDocumentData.model_validate(health_doc.to_dict() or {})
+        existing_last_temperature = health_model.prefs.lastTemperature if health_model.prefs else None
+        existing_last_temperature_start = existing_last_temperature.start if existing_last_temperature else None
+        should_update_last_temperature = existing_last_temperature_start is None or start_timestamp >= float(
+            existing_last_temperature_start
+        )
+
+        interval_timestamp_ms = int(current_time * 1000)
+        interval_id = f"{interval_timestamp_ms}-{uuid.uuid4().hex[:20]}"
+        temperature_entry = FirebaseTemperatureData(
+            mode="temperature",
+            start=start_timestamp,
+            lastUpdated=current_time,
+            offset=current_offset,
+            amount=float(amount),
+            units=units,
+            notes=notes,
+        )
+        last_temperature = FirebaseLastTemperatureData(
+            _id=interval_id,
+            type="health",
+            mode="temperature",
+            start=start_timestamp,
+            lastUpdated=current_time,
+            offset=current_offset,
+            amount=float(amount),
+            units=units,
+            multientry_key=None,
+        )
+
+        health_data_ref = health_ref.collection("data").document(interval_id)
+        await health_data_ref.set(to_firebase_dict(temperature_entry))
+        _LOGGER.info("Created temperature data entry in subcollection: %s", interval_id)
+
+        if should_update_last_temperature:
+            try:
+                await health_ref.update(
+                    {
+                        "prefs.lastTemperature": last_temperature.model_dump(by_alias=True),
+                        "prefs.timestamp": {"seconds": current_time},
+                        "prefs.local_timestamp": current_time,
+                    }
+                )
+            except GoogleAPICallError as err:
+                _LOGGER.error("Failed to log temperature data: %s", err)
+                raise
+
+        _LOGGER.info("Temperature data logged successfully (updated_last=%s)", should_update_last_temperature)
 
     async def log_pump(
         self,
@@ -2000,7 +2109,7 @@ class HuckleberryAPI:
             if not last_growth:
                 return None
 
-            return FirebaseGrowthData.model_validate(last_growth.model_dump(by_alias=True, exclude_none=True))
+            return last_growth
         except (GoogleAPICallError, ValidationError, RuntimeError, TypeError, ValueError) as err:
             _LOGGER.error("Failed to get growth data: %s", err)
             return None
