@@ -178,7 +178,7 @@ async def main() -> None:
 - `await cancel_nursing(child_uid)` - Cancel without saving
 - `await complete_nursing(child_uid)` - Complete and save to history
 - `await log_nursing(child_uid, start_time=..., end_time=..., side="left")` - Log a completed breastfeeding interval with explicit timestamps
-- `await log_bottle(child_uid, start_time=..., amount=..., bottle_type=..., units=...)` - Log bottle feeding with an explicit event timestamp
+- `await log_bottle(child_uid, start_time=..., amount=..., bottle_type=..., units=..., notes=None)` - Log bottle feeding with an explicit event timestamp and optional note
   - `bottle_type`: "Breast Milk", "Formula", "Cow Milk", "Soy Milk", etc.
   - `amount`: Volume fed (e.g., 120.0)
   - `units`: "ml" or "oz"
